@@ -1,84 +1,69 @@
 import time
-import math
 import pybullet as p
 import pybullet_data
 
+# Constants for robot configuration
+PANDA_ARM_JOINTS = [0, 1, 2, 3, 4, 5, 6]
+PANDA_HOME = [0.0, -0.4, 0.0, -2.2, 0.0, 2.0, 0.8]
 
-def get_panda_ee_link_index(robot_id: int) -> int:
-    ee_candidates = {"panda_hand", "panda_link8"}
-    for i in range(p.getNumJoints(robot_id)):
-        name = p.getJointInfo(robot_id, i)[12].decode("utf-8")
-        if name in ee_candidates:
-            return i
-    return p.getNumJoints(robot_id) - 1
+def setup_world():
+    # Initializes environment
+    p.setAdditionalSearchPath(pybullet_data.getDataPath())
+    p.resetSimulation()
+    p.setGravity(0, 0, -9.81)
 
-
-def get_panda_arm_joint_indices(robot_id: int):
-    joints = []
-    for i in range(p.getNumJoints(robot_id)):
-        info = p.getJointInfo(robot_id, i)
-        joint_type = info[2]
-        joint_name = info[1].decode("utf-8")
-        if joint_type == p.JOINT_REVOLUTE and joint_name.startswith("panda_joint"):
-            joints.append(i)
-    return joints[:7]
-
-
-def set_arm_joints(robot_id: int, joint_indices, target_positions):
-    for j, q in zip(joint_indices, target_positions):
-        p.setJointMotorControl2(
-            bodyIndex=robot_id,
-            jointIndex=j,
-            controlMode=p.POSITION_CONTROL,
-            targetPosition=float(q),
-            force=250,
-            positionGain=0.08,
-            velocityGain=1.0,
-        )
-
-
-def move_ee_ik(robot_id: int, ee_link: int, arm_joints, target_pos, target_orn=None, steps=480):
-    if target_orn is None:
-        target_orn = p.getQuaternionFromEuler([math.pi, 0.0, 0.0])
-
-    ik = p.calculateInverseKinematics(
-        bodyUniqueId=robot_id,
-        endEffectorLinkIndex=ee_link,
-        targetPosition=target_pos,
-        targetOrientation=target_orn,
-        maxNumIterations=200,
-        residualThreshold=1e-4,
+    # Load environment assets
+    p.loadURDF("plane.urdf")
+    p.loadURDF(
+        "table/table.urdf",
+        basePosition=[0.6, 0.0, 0.0],
+        useFixedBase=True,
     )
 
-    q_arm = [ik[i] for i in range(len(arm_joints))]
-    set_arm_joints(robot_id, arm_joints, q_arm)
+    # Load robot
+    panda_id = p.loadURDF(
+        "franka_panda/panda.urdf",
+        basePosition=[0.0, 0.0, 0.62],
+        useFixedBase=True,
+    )
 
-    for _ in range(steps):
-        p.stepSimulation()
-        time.sleep(1 / 240)
+    # Load target object
+    cube_id = p.loadURDF("cube_small.urdf", basePosition=[0.55, 0.0, 0.68])
+
+    # Set robot home configuration
+    for j, q in zip(PANDA_ARM_JOINTS, PANDA_HOME):
+        p.resetJointState(panda_id, j, q)
+
+    # Adjust camera view
+    p.resetDebugVisualizerCamera(
+        cameraDistance=1.2,
+        cameraYaw=55,
+        cameraPitch=-35,
+        cameraTargetPosition=[0.55, 0.0, 0.45],
+    )
+
+    return panda_id, cube_id
 
 
 def main():
-    p.connect(p.GUI)
-    p.resetSimulation()
-    p.setGravity(0, 0, -9.8)
-    p.setAdditionalSearchPath(pybullet_data.getDataPath())
+    cid = p.connect(p.GUI)
+    if cid < 0:
+        raise RuntimeError("PyBullet GUI connection failed")
 
-    p.loadURDF("plane.urdf")
-    robot_id = p.loadURDF("franka_panda/panda.urdf", useFixedBase=True)
-    p.loadURDF("cube_small.urdf", [0.5, 0.0, 0.02])
+    try:
+        setup_world()
+        p.setRealTimeSimulation(0)
 
-    ee_link = get_panda_ee_link_index(robot_id)
-    arm_joints = get_panda_arm_joint_indices(robot_id)
+        # Simulation loop
+        for _ in range(2400):
+            if not p.isConnected():
+                break
+            p.stepSimulation()
+            time.sleep(1.0 / 240.0)
 
-    move_ee_ik(robot_id, ee_link, arm_joints, target_pos=[0.4, 0.0, 0.5], steps=360)
-    move_ee_ik(robot_id, ee_link, arm_joints, target_pos=[0.55, 0.05, 0.35], steps=360)
-    move_ee_ik(robot_id, ee_link, arm_joints, target_pos=[0.55, 0.05, 0.25], steps=360)
-    move_ee_ik(robot_id, ee_link, arm_joints, target_pos=[0.55, 0.05, 0.45], steps=360)
-
-    while True:
-        p.stepSimulation()
-        time.sleep(1 / 240)
+    finally:
+        if p.isConnected():
+            p.disconnect()
 
 
 if __name__ == "__main__":
