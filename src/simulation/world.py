@@ -18,7 +18,17 @@ class World:
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         p.resetSimulation()
         p.setGravity(0, 0, -9.81)
-        
+
+        # Physics quality (anti-tunneling)
+        p.setTimeStep(1.0 / 240.0)
+        p.setPhysicsEngineParameter(
+            fixedTimeStep=1.0 / 240.0,
+            numSolverIterations=150,
+            numSubSteps=4,
+            enableConeFriction=1,
+            contactBreakingThreshold=0.001,
+        )
+
         # Disable real-time simulation (we will step manually)
         p.setRealTimeSimulation(0)
 
@@ -38,7 +48,7 @@ class World:
         )
 
         # Load target object
-        self.cube_id = p.loadURDF("cube_small.urdf", basePosition=[0.55, 0.0, 0.68])
+        self.cube_id = p.loadURDF("cube_small.urdf", basePosition=[0.55, 0.0, 0.70])
 
         # Set robot home configuration
         for j, q in zip(self.PANDA_ARM_JOINTS, self.PANDA_HOME):
