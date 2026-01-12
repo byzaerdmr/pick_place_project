@@ -31,23 +31,6 @@ def main():
             max_velocity=1.0,
         )
 
-        targets = [
-            [0.55, 0.00, 0.85],
-            [0.50, 0.15, 0.85],
-            [0.50, -0.15, 0.85],
-        ]
-
-        for tgt in targets:
-            err = ik.move_to(tgt, duration_s=1.8, tol=0.02, settle_steps=40)
-            print(f"target={tgt} err={err:.4f}")
-            for _ in range(60):
-                world.step()
-                time.sleep(1.0 / 240.0)
-
-        for _ in range(2400):
-            world.step()
-            time.sleep(1.0 / 240.0)
-
     except KeyboardInterrupt:
         pass
     finally:
