@@ -1,4 +1,5 @@
 def clamp(v: float, vmin: float, vmax: float) -> float:
+    # restrict a value within a specified range
     return max(vmin, min(v, vmax))
 
 
@@ -8,6 +9,7 @@ def clamp_xyz(
     ylim: tuple[float, float],
     zlim: tuple[float, float],
 ) -> list[float]:
+    # restrict 3d coordinates to workspace boundaries
     x, y, z = target
     return [
         clamp(x, xlim[0], xlim[1]),
@@ -17,13 +19,16 @@ def clamp_xyz(
 
 
 def safe_heights(table_z: float) -> tuple[float, float]:
-    safe_z = table_z + 0.12
-    pick_z = table_z + 0.03
+    # define vertical clearance heights based on table level
+    safe_z = table_z + 0.15 # height for safe horizontal movement
+    pick_z = table_z + 0.04 # height just above the table for placement
     return safe_z, pick_z
 
 
 def workspace_limits(table_z: float) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float]]:
-    xlim = (0.30, 0.75)
-    ylim = (-0.30, 0.30)
-    zlim = (table_z + 0.02, table_z + 0.45)
+    # define 3d bounding box for safe robot operation
+    xlim = (0.30, 0.75) # longitudinal range
+    ylim = (-0.35, 0.35) # lateral range
+    # minimum z is slightly above table to avoid hard collisions
+    zlim = (table_z + 0.02, table_z + 0.50)
     return xlim, ylim, zlim

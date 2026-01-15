@@ -1,25 +1,19 @@
 import pybullet as p
+import time
 from control.ik_controller import IKController
 from control.gripper_controller import GripperController
 from utils.safety import safe_heights, workspace_limits, clamp_xyz
 
-
 class PickPlaceTask:
     # manage high level logic for the pick and place operation
-    def __init__(
-        self,
-        world,
-        ik: IKController,
-        gripper: GripperController,
-        use_attach: bool = True,
-    ):
+    def __init__(self, world, ik: IKController, gripper: GripperController, use_attach: bool = True):
         self.world = world
         self.ik = ik
         self.gripper = gripper
-        self.use_attach = use_attach # option to use a constraint for stable grasping
+        self.use_attach = use_attach # option to secure the object during transport
         self._constraint_id = None
 
-        # initialize workspace limits based on table height
+        # initialize limits from world data
         self.table_z = world.get_table_z()
         self.safe_z, self.pick_z = safe_heights(self.table_z)
         self.xlim, self.ylim, self.zlim = workspace_limits(self.table_z)
@@ -30,36 +24,20 @@ class PickPlaceTask:
 
     def _dist(self, a, b) -> float:
         # calculate euclidean distance between two points
-        dx = a[0] - b[0]
-        dy = a[1] - b[1]
-        dz = a[2] - b[2]
-        return (dx * dx + dy * dy + dz * dz) ** 0.5
+        return sum((a[i] - b[i])**2 for i in range(3))**0.5
 
-    def _is_grasp_close_enough(self, thresh: float = 0.06) -> bool:
-        # check if the gripper is close enough to the object to grasp
+    def _is_grasp_close_enough(self, thresh: float = 0.08) -> bool:
+        # verify if the gripper is correctly positioned over the cube
         pose = self.world.get_cube_pose()
-        if pose is None:
-            return False
-        cube_pos, _ = pose
+        if pose is None: return False
         ee_pos = p.getLinkState(self.ik.robot_id, self.ik.ee_link)[4]
-        return self._dist(list(ee_pos), list(cube_pos)) < thresh
+        return self._dist(list(ee_pos), list(pose[0])) < thresh
 
     def _attach_cube(self):
-        # create a constraint to simulate a perfect grasp
-        if not self._is_grasp_close_enough():
-            return
-
-        if not self.use_attach:
-            return
-        pose = self.world.get_cube_pose()
-        if pose is None:
-            return
-        pos, orn = pose
-        ee_state = p.getLinkState(self.ik.robot_id, self.ik.ee_link)
-        ee_pos = ee_state[4]
-        ee_orn = ee_state[5]
-
-        # create a fixed constraint between the gripper and the cube
+        # create a virtual bond between gripper and cube to prevent sliding
+        if not self._is_grasp_close_enough() or not self.use_attach: return
+        
+        # lock cube to end-effector link
         self._constraint_id = p.createConstraint(
             parentBodyUniqueId=self.ik.robot_id,
             parentLinkIndex=self.ik.ee_link,
@@ -70,58 +48,46 @@ class PickPlaceTask:
             parentFramePosition=[0, 0, 0.02],
             childFramePosition=[0, 0, 0],
         )
+        p.changeConstraint(self._constraint_id, maxForce=150)
 
-        p.changeConstraint(self._constraint_id, maxForce=200)
-
-    # release the constraint, dropping the object
     def _detach_cube(self):
+        # release the virtual bond for drop-off
         if self._constraint_id is not None:
             p.removeConstraint(self._constraint_id)
             self._constraint_id = None
 
-    # execute full pick and place sequence
     def run(self, place_xy=(0.45, 0.20)):
+        # execute full mission sequence: pick, transport, and place
         cube_pose = self.world.get_cube_pose()
-        if cube_pose is None:
-            return
+        if cube_pose is None: return
 
-        cube_pos, _ = cube_pose
-        cx, cy, cz = cube_pos
-
-        # calculate waypoints
-        cube_top_z = cz + 0.02
-        pre_grasp_z = self.safe_z
-        grasp_z = max(self.table_z + 0.02, min(cube_top_z, self.table_z + 0.08))
-
-        # clamp all points to ensure safety
-        pre_grasp = self._clamp([cx, cy, pre_grasp_z])
-        grasp = self._clamp([cx, cy, grasp_z])
-        lift = self._clamp([cx, cy, self.safe_z])
-
+        cx, cy, cz = cube_pose[0]
+        
+        # calculate precise heights for each phase
+        pre_grasp = self._clamp([cx, cy, self.safe_z + 0.05])
+        grasp = self._clamp([cx, cy, self.table_z + 0.035])
+        lift = self._clamp([cx, cy, self.safe_z + 0.1])
+        
         px, py = place_xy
-        pre_place = self._clamp([px, py, self.safe_z])
-        place = self._clamp([px, py, self.pick_z])
-        retreat = self._clamp([px, py, self.safe_z])
+        pre_place = self._clamp([px, py, self.safe_z + 0.1])
+        place = self._clamp([px, py, self.table_z + 0.05])
 
-        # execute sequence
+        # approach phase
         self.gripper.open()
-
-        # approach
-        self.ik.move_to(pre_grasp, duration_s=1.5, tol=0.02, settle_steps=30)
-        self.ik.move_to(grasp, duration_s=1.8, tol=0.015, settle_steps=60)
-
-        # grasp
-        self.gripper.close(width=0.01, force=120.0, steps=240)
+        self.ik.move_to(pre_grasp, duration_s=1.2)
+        self.ik.move_to(grasp, duration_s=1.0)
+        
+        # grasping phase with stabilization delay
+        self.gripper.close(width=0.015)
+        time.sleep(0.6) # allow physics to settle before attachment
         self._attach_cube()
-
-        # move to place
-        self.ik.move_to(lift, duration_s=1.5, tol=0.02, settle_steps=40)
-        self.ik.move_to(pre_place, duration_s=2.0, tol=0.02, settle_steps=40)
-        self.ik.move_to(place, duration_s=1.5, tol=0.02, settle_steps=30)
-
-        # release
+        
+        # transport phase
+        self.ik.move_to(lift, duration_s=1.0)
+        self.ik.move_to(pre_place, duration_s=1.5)
+        self.ik.move_to(place, duration_s=1.0)
+        
+        # release phase
         self._detach_cube()
         self.gripper.open()
-
-        # retreat
-        self.ik.move_to(retreat, duration_s=1.5, tol=0.02, settle_steps=40)
+        self.ik.move_to(pre_place, duration_s=1.0)

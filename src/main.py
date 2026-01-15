@@ -1,59 +1,67 @@
 import time
+import math
 import pybullet as p
-
 from simulation.world import World
 from control.ik_controller import IKController
 from control.gripper_controller import GripperController
-from planning.pick_place_task import PickPlaceTask
-
-
-def get_panda_ee_link_index(robot_id: int) -> int:
-    # find the index of the end-effector link based on name
-    candidates = {"panda_hand", "panda_link8"}
-    for i in range(p.getNumJoints(robot_id)):
-        link_name = p.getJointInfo(robot_id, i)[12].decode("utf-8")
-        if link_name in candidates:
-            return i
-    return p.getNumJoints(robot_id) - 1
-
+from control.joint_controller import set_arm_joints
 
 def main():
-    # initialize the simulation environment
     world = World()
     try:
         world.setup()
-
-        # robot configuration and link identification
         robot_id = world.panda_id
-        arm_joints = [0, 1, 2, 3, 4, 5, 6]
-        ee_link = get_panda_ee_link_index(robot_id)
+        ee_link = 11 
+        ik = IKController(world, robot_id, ee_link, [0,1,2,3,4,5,6])
+        gripper = GripperController(robot_id)
+        
+        target_pos = ik.ee_pos()
+        gripper_width = 0.04
+        d_val = 0.0025 # speed of movement
+        
+        while p.isConnected():
+            keys = p.getKeyboardEvents()
 
-        # initialize inverse kinematics controller
-        ik = IKController(
-            world=world,
-            robot_id=robot_id,
-            ee_link=ee_link,
-            arm_joints=arm_joints,
-            max_force=200.0,
-            max_velocity=1.0,
-        )
+            # compute motion in camera frame
+            yaw_rad = math.radians(world.camera_yaw)
+            dx, dy = 0, 0
+            
+            # directions
+            if p.B3G_UP_ARROW in keys and keys[p.B3G_UP_ARROW] & p.KEY_IS_DOWN:
+                dy = d_val
+            if p.B3G_DOWN_ARROW in keys and keys[p.B3G_DOWN_ARROW] & p.KEY_IS_DOWN:
+                dy = -d_val
+                
+            if p.B3G_LEFT_ARROW in keys and keys[p.B3G_LEFT_ARROW] & p.KEY_IS_DOWN:
+                dx = -d_val 
+            if p.B3G_RIGHT_ARROW in keys and keys[p.B3G_RIGHT_ARROW] & p.KEY_IS_DOWN:
+                dx = d_val 
 
-        gripper = GripperController(robot_id) # initialize gripper controller
+            # rotation
+            target_pos[0] += dx * math.cos(yaw_rad) - dy * math.sin(yaw_rad)
+            target_pos[1] += dx * math.sin(yaw_rad) + dy * math.cos(yaw_rad)
 
-        task = PickPlaceTask(world, ik, gripper, use_attach=True) # initialize the high level task manager
+            # move up/down
+            if p.B3G_PAGE_UP in keys and keys[p.B3G_PAGE_UP] & p.KEY_IS_DOWN: target_pos[2] += d_val
+            if p.B3G_PAGE_DOWN in keys and keys[p.B3G_PAGE_DOWN] & p.KEY_IS_DOWN: target_pos[2] -= d_val
+            
+            # control gripper
+            if p.B3G_HOME in keys and keys[p.B3G_HOME] & p.KEY_IS_DOWN:
+                gripper_width = min(0.08, gripper_width + 0.0015)
+            if p.B3G_END in keys and keys[p.B3G_END] & p.KEY_IS_DOWN:
+                gripper_width = max(0.00, gripper_width - 0.0015)
 
-        task.run(place_xy=(0.45, 0.20)) # execute the pick and place sequence
+            # apply joint and gripper positions
+            joint_poses = p.calculateInverseKinematics(robot_id, ee_link, target_pos, ik.down_orn)
+            set_arm_joints(robot_id, [0,1,2,3,4,5,6], [joint_poses[i] for i in range(7)])
+            p.setJointMotorControlArray(robot_id, gripper.finger_joints, p.POSITION_CONTROL,
+                                        targetPositions=[gripper_width/2, gripper_width/2], forces=[150,150])
 
-        # keep simulation open to view the result
-        for _ in range(1200):
             world.step()
             time.sleep(1.0 / 240.0)
 
-    except KeyboardInterrupt:
-        pass
-    finally:
-        world.disconnect() # clean up and close connection
-
+    finally: 
+        world.disconnect()
 
 if __name__ == "__main__":
     main()

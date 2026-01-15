@@ -1,23 +1,12 @@
 import pybullet as p
+import math
 from .joint_controller import set_arm_joints
 
-
-def _vec_sub(a, b):
-    return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-
-
-def _vec_add(a, b):
-    return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-
-
-def _vec_mul(a, s):
-    return [a[0] * s, a[1] * s, a[2] * s]
-
-
-def _dist(a, b):
-    d = _vec_sub(a, b)
-    return (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) ** 0.5
-
+# math functions
+def _vec_sub(a, b): return [a[i] - b[i] for i in range(3)]
+def _vec_add(a, b): return [a[i] + b[i] for i in range(3)]
+def _vec_mul(a, s): return [a[i] * s for i in range(3)]
+def _dist(a, b): return sum((a[i] - b[i])**2 for i in range(3))**0.5
 
 class IKController:
     def __init__(
@@ -35,40 +24,49 @@ class IKController:
         self.arm_joints = arm_joints
         self.max_force = max_force
         self.max_velocity = max_velocity
+        
+        self.down_orn = p.getQuaternionFromEuler([math.pi, 0, -math.pi / 4])
 
     def ee_pos(self) -> list[float]:
+        # position of robot's endpoint
         return list(p.getLinkState(self.robot_id, self.ee_link)[4])
+
+    def hold_current_pose(self):
+        # leave robot where it is
+        current_joints = [p.getJointState(self.robot_id, i)[0] for i in self.arm_joints]
+        set_arm_joints(self.robot_id, self.arm_joints, current_joints, max_force=self.max_force)
 
     def move_to(
         self,
         target_pos: list[float],
         target_orn: list[float] | None = None,
         duration_s: float = 1.5,
-        tol: float = 0.02,
-        settle_steps: int = 30,
+        tol: float = 0.005,
+        settle_steps: int = 40,
     ) -> float:
+
         start = self.ee_pos()
         steps = max(1, int(duration_s * 240))
+        
+        if target_orn is None:
+            target_orn = self.down_orn
 
-        last_err = _dist(start, target_pos)
-
+        last_err = 0.0
         for t in range(steps):
             alpha = (t + 1) / steps
             interp_pos = _vec_add(start, _vec_mul(_vec_sub(target_pos, start), alpha))
 
-            if target_orn is None:
-                q = p.calculateInverseKinematics(
-                    self.robot_id, self.ee_link, targetPosition=interp_pos
-                )
-            else:
-                q = p.calculateInverseKinematics(
-                    self.robot_id,
-                    self.ee_link,
-                    targetPosition=interp_pos,
-                    targetOrientation=target_orn,
-                )
+            # ik solver
+            joint_poses = p.calculateInverseKinematics(
+                self.robot_id,
+                self.ee_link,
+                targetPosition=interp_pos,
+                targetOrientation=target_orn,
+                maxNumIterations=100,
+                residualThreshold=1e-5
+            )
 
-            target_joints = [q[j] for j in self.arm_joints]
+            target_joints = [joint_poses[i] for i in range(len(self.arm_joints))]
             set_arm_joints(
                 self.robot_id,
                 self.arm_joints,
@@ -78,13 +76,9 @@ class IKController:
             )
 
             self.world.step()
+            last_err = _dist(self.ee_pos(), interp_pos)
 
-            cur = self.ee_pos()
-            last_err = _dist(cur, interp_pos)
-
-            if last_err <= tol:
-                break
-
+        # waiting for shake
         for _ in range(settle_steps):
             self.world.step()
 
