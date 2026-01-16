@@ -1,5 +1,19 @@
-# Default ignored files
-/shelf/
-/workspace.xml
-# Editor-based HTTP Client requests
-/httpRequests/
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDEs
+.idea/
+.vscode/
+*.iml
+
+# Project specific
+e --continueqq
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
